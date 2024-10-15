@@ -36,15 +36,16 @@ def save_image(image, output_path, filename):
     img.save(output_file)
     print(f"Saved {output_file}")
 
-def process_nd2_file(input_file, output_path, channel_range, frame_range, contrast_of_channels):
+def process_nd2_file(input_file, output_path, channel_range, frame_range, z_range, contrast_of_channels):
     """
-    Processes an ND2 file by iterating through channels and frames, adjusting brightness/contrast, and saving as JPEG.
+    Processes an ND2 file by iterating through channels, frames, z-planes, adjusting brightness/contrast, and saving as JPEG.
     
     Parameters:
     - input_file: Path to the ND2 file.
     - output_path: Path where the output JPGs will be saved.
     - channel_range: Tuple indicating the range of channels to process (start_channel, end_channel).
     - frame_range: Tuple indicating the range of frames to process (start_frame, end_frame).
+    - z_range: Tuple indicating the range of z-planes to process (start_z, end_z).
     - contrast_of_channels: Dictionary with min/max brightness values for each channel.
     
     Returns:
@@ -52,26 +53,40 @@ def process_nd2_file(input_file, output_path, channel_range, frame_range, contra
     """
     with ND2Reader(input_file) as nd2:
         print(f"Processing file: {input_file}")
+        axes = nd2.axes
+        z_exists = 'z' in axes
         print("Available axes:", nd2.axes)  # Display available axes in the ND2 file
-        nd2.bundle_axes = 'tyxc'  # Set axes: time (t), y (height), x (width), channel (c)
+        if z_exists:
+            nd2.bundle_axes = 'tzcyx'  # Set axes: time (t), z-plane (z), channel (c), y (height), x (width)
+        else:
+            nd2.bundle_axes = 'tyxc'  # Set axes: time (t), y (height), x (width), channel (c)
+
 
         for c in range(channel_range[0], channel_range[1] + 1):
             for f in range(frame_range[0], frame_range[1] + 1):
-                nd2.default_coords['t'] = f - 1  # Select frame (time point)
-                nd2.default_coords['c'] = c - 1  # Select channel
+                for z in range(z_range[0], z_range[1] + 1):
+                    nd2.default_coords['t'] = f - 1  # Select frame (time point)
+                    nd2.default_coords['c'] = c - 1  # Select channel
+                    if z_exists:
+                        nd2.default_coords['z'] = z - 1  # Select z-plane
 
-                # Get the 2D frame as a NumPy array
-                image = np.array(nd2.get_frame_2D(c=c-1, t=f-1))
+                    # Get the 2D frame as a NumPy array
+                    if z_exists:
+                        image = np.array(nd2.get_frame_2D(c=c-1, t=f-1, z=z-1))
+                    else:
+                        image = np.array(nd2.get_frame_2D(c=c-1, t=f-1))
 
-                # Adjust brightness and contrast based on the channel's min/max values
-                min_value, max_value = contrast_of_channels.get(c, (0, 255))  # Fallback to (0, 255) if no values specified
-                image = adjust_brightness_contrast(image, min_value, max_value)
+                    # Adjust brightness and contrast based on the channel's min/max values
+                    min_value, max_value = contrast_of_channels.get(c, (0, 255))  # Fallback to (0, 255) if no values specified
+                    image = adjust_brightness_contrast(image, min_value, max_value)
 
-                # Save the image as JPEG
-                filename = f"{os.path.basename(input_file).replace('.nd2', '')}_channel_{c}_frame_{f}"
-                save_image(image, output_path, filename)
+                    # Save the image as JPEG
+                    filename = f"{os.path.basename(input_file).replace('.nd2', '')}_channel_{c}_frame_{f}"
+                    if z_exists:
+                        filename += f"_z_{z}"
+                    save_image(image, output_path, filename)
 
-def process_nd2_folder(input_folder, output_path, channel_range, frame_range, contrast_of_channels):
+def process_nd2_folder(input_folder, output_path, channel_range, frame_range, z_range, contrast_of_channels):
     """
     Processes all ND2 files in a given folder.
     
@@ -80,6 +95,7 @@ def process_nd2_folder(input_folder, output_path, channel_range, frame_range, co
     - output_path: Path where the output JPGs will be saved.
     - channel_range: Tuple indicating the range of channels to process (start_channel, end_channel).
     - frame_range: Tuple indicating the range of frames to process (start_frame, end_frame).
+    - z_range: Tuple indicating the range of z-planes to process (start_z, end_z).
     - contrast_of_channels: Dictionary with min/max brightness values for each channel.
     
     Returns:
@@ -92,24 +108,25 @@ def process_nd2_folder(input_folder, output_path, channel_range, frame_range, co
     for file in os.listdir(input_folder):
         if file.endswith('.nd2'):
             input_file = os.path.join(input_folder, file)
-            process_nd2_file(input_file, output_path, channel_range, frame_range, contrast_of_channels)
+            process_nd2_file(input_file, output_path, channel_range, frame_range, z_range, contrast_of_channels)
 
-# Hauptteil des Programms
+# Main part of the program
 if __name__ == "__main__":
-    # Pfade und Variablen definieren
-    input_folder = "C:/Users/Kai_F/Documents/GitHub/carolyn-nd2/input"  # Ordner mit ND2-Dateien
-    output_path = "C:/Users/Kai_F/Documents/GitHub/carolyn-nd2/output"  # Pfad zum Speichern der Ausgabedateien
+    # Define paths and variables
+    input_folder = "C:/Users/Kai_F/Documents/GitHub/carolyn-nd2/input"  # Folder with ND2 files
+    output_path = "C:/Users/Kai_F/Documents/GitHub/carolyn-nd2/output"  # Path to save the output files
     
-    # Parameter für Kanal- und Frame-Intervalle (channel_range, frame_range)
-    channel_range = (2, 3)  # Start and end channels (inclusive)
-    frame_range = (19, 25)  # Start and end frames (inclusive)
+    # Channel, frame, and z-plane ranges
+    channel_range = (1, 2)  # Start and end channels (inclusive)
+    frame_range = (1,1)  # Start and end frames (inclusive)
+    z_range = (1, 30)        # Start and end z-planes (inclusive)
     
-    # Definiere Min- und Max-Werte für jeden Kanal
+    # Define min and max values for each channel
     contrast_of_channels = {
         2: (500, 800),  # Channel 2: Min=500, Max=800
         3: (300, 700),  # Channel 3: Min=300, Max=700
-        # Weitere Kanäle können hier hinzugefügt werden
+        # Add more channels if necessary
     }
     
-    # Verarbeite alle ND2-Dateien im Input-Ordner
-    process_nd2_folder(input_folder, output_path, channel_range, frame_range, contrast_of_channels)
+    # Process all ND2 files in the input folder
+    process_nd2_folder(input_folder, output_path, channel_range, frame_range, z_range, contrast_of_channels)
