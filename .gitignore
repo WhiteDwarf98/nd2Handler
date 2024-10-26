@@ -1,3 +1,6 @@
 input/
 output/
 venv/
+old/
+__pychache__/
+.ipynb_checkpoints/
