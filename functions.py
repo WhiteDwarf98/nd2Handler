@@ -36,21 +36,43 @@ def save_image(image, output_path, filename):
     img.save(output_file)
     print(f"Saved {output_file}")
 
-def process_nd2_file(input_file, output_path, channel_range, frame_range, z_range, view_range, contrast_of_channels):
+def process_z_planes(nd2, z_range_local, v, c, f, contrast, use_mip, output_path, filename_base):
+    """Handle processing of z-planes, either with MIP or exporting each plane separately."""
+    if use_mip:
+        # Generate MIP across the z range
+        image_stack = [np.array(nd2.get_frame_2D(v=v-1, c=c-1, t=f-1, z=z-1)) for z in z_range_local]
+        mip_image = maximum_intensity_projection(np.stack(image_stack))
+        mip_image = adjust_brightness_contrast(mip_image, *contrast)
+        
+        filename = f"{filename_base}_MIP_z_{z_range_local[0]}-{z_range_local[-1]}"
+        save_image(mip_image, output_path, filename)
+        print(f"Saved {filename}")
+    else:
+        # Process each z-plane individually
+        for z in z_range_local:
+            nd2.default_coords['z'] = z - 1
+            image = np.array(nd2.get_frame_2D(v=v-1, c=c-1, t=f-1, z=z-1))
+            image = adjust_brightness_contrast(image, *contrast)
+            
+            filename = f"{filename_base}_z_{z}"
+            save_image(image, output_path, filename)
+            print(f"Saved {filename}")
+
+def process_nd2_file(input_file, output_path, channel_range, frame_range, z_range, view_range, contrast_of_channels, use_mip):
     """
-    Processes an ND2 file by iterating through views, channels, frames, z-planes, 
-    adjusting brightness/contrast, and saving as JPEG.
+    Processes an ND2 file by iterating through views, channels, frames, and z-planes, 
+    adjusting brightness/contrast, optionally applying Maximum Intensity Projection (MIP), 
+    and saving as JPEG images.
     
     Parameters:
     - input_file: Path to the ND2 file.
     - output_path: Path where the output JPGs will be saved.
     - channel_range: Tuple indicating the range of channels to process (start_channel, end_channel).
     - frame_range: Tuple indicating the range of frames to process (start_frame, end_frame).
-    - z_range: Tuple indicating the range of z-planes to process (start_z, end_z) OR
-               dictionary indicating the range of z-planes to process for each channel
-               e.g.: z_range = {1:(3,4), 2:(1,5)}
-    - view_range: Tuple indicating the range of views (also called "Series") to process (start_view, end_view).
+    - z_range: Tuple or dict indicating the range of z-planes to process for each channel.
+    - view_range: Tuple indicating the range of views to process (start_view, end_view).
     - contrast_of_channels: Dictionary with min/max brightness values for each channel.
+    - use_mip: Boolean indicating whether to apply Maximum Intensity Projection (MIP) over the z-range.
     
     Returns:
     - None
@@ -61,58 +83,66 @@ def process_nd2_file(input_file, output_path, channel_range, frame_range, z_rang
         z_exists = 'z' in axes
         v_exists = 'v' in axes
         print("Available axes:", axes)
-        
-        if v_exists:
-            nd2.bundle_axes = 'vtzcyx' if z_exists else 'vtyxc'
-        else:
-            nd2.bundle_axes = 'tzcyx' if z_exists else 'tyxc'
 
-        # Iterate through view (v), channel (c), frame (t), and z-plane (z) as needed
+        # Set bundle_axes based on available dimensions
+        nd2.bundle_axes = 'vtzcyx' if v_exists and z_exists else 'vtyxc' if v_exists else 'tzcyx' if z_exists else 'tyxc'
+
+        # Iterate over views, channels, and frames as needed
         for v in range(view_range[0], view_range[1] + 1):
             if v_exists:
                 nd2.default_coords['v'] = v - 1  # Set view if available
 
             for c in range(channel_range[0], channel_range[1] + 1):
+                contrast = contrast_of_channels.get(c, (0, 255))  # Retrieve contrast values for channel
                 for f in range(frame_range[0], frame_range[1] + 1):
+                    nd2.default_coords['t'] = f - 1
+                    nd2.default_coords['c'] = c - 1
+                    
+                    # Define local z-range for each channel if z_range is a dictionary
+                    z_range_local = range(z_range[0], z_range[1] + 1) if isinstance(z_range, tuple) else range(z_range.get(c)[0], z_range.get(c)[1] + 1)
 
-                    # Different z range for each channel
-                    if isinstance(z_range, tuple):
-                        z_range_local = range(z_range[0], z_range[1] + 1)
-                    if isinstance(z_range, dict):
-                        z_range_local = range(z_range.get(c)[0], z_range.get(c)[1] + 1)
+                    # Base filename for each combination
+                    filename_base = f"{os.path.basename(input_file).replace('.nd2', '')}"
+                    if v_exists:
+                        filename_base += f"_view_{v}"
+                    filename_base += f"_channel_{c}_frame_{f}"
 
-                    for z in z_range_local:
-                        nd2.default_coords['t'] = f - 1  # Frame (time point)
-                        nd2.default_coords['c'] = c - 1  # Channel
-                        if z_exists:
-                            nd2.default_coords['z'] = z - 1  # Z-plane
+                    # Process z-planes with MIP or single slices
+                    if z_exists:
+                        process_z_planes(nd2, z_range_local, v, c, f, contrast, use_mip, output_path, filename_base)
+                    else:
+                        # Process 2D frames without z-dimension
+                        image = np.array(nd2.get_frame_2D(v=v-1, c=c-1, t=f-1)) if v_exists else np.array(nd2.get_frame_2D(c=c-1, t=f-1))
+                        image = adjust_brightness_contrast(image, *contrast)
+                        save_image(image, output_path, filename_base)
+                        print(f"Saved {filename_base}")
 
-                        # Retrieve the 2D frame as a NumPy array
-                        if z_exists and v_exists:
-                            image = np.array(nd2.get_frame_2D(v=v-1, c=c-1, t=f-1, z=z-1))
-                        elif v_exists:
-                            image = np.array(nd2.get_frame_2D(v=v-1, c=c-1, t=f-1))
-                        elif z_exists:
-                            image = np.array(nd2.get_frame_2D(c=c-1, t=f-1, z=z-1))
-                        else:
-                            image = np.array(nd2.get_frame_2D(c=c-1, t=f-1))
+# def maximum_intensity_projection(image):
+#     """
+#     Perform Maximum Intensity Projection (MIP) over a specified range of z-planes.
+    
+#     Parameters:
+#     - image: 3D NumPy array representing the image stack, with dimensions (z, y, x).
+#     - z_range: Tuple specifying the range of z-planes to include in the MIP (start_z, end_z).
+    
+#     Returns:
+#     - 2D NumPy array representing the MIP over the specified z-range.
+#     """
+#     start_z, end_z = z_range
+    
+#     # Slicing the image stack to the specified z-range
+#     limited_stack = image[start_z:end_z + 1, :, :]
+    
+#     # Perform Maximum Intensity Projection on the limited z-range
+#     mip_image = np.max(limited_stack, axis=0)
+    
+#     return mip_image
 
-                        # Adjust brightness and contrast based on the channel's min/max values
-                        min_value, max_value = contrast_of_channels.get(c) #contrast_of_channels.get(c, (0, 255))
-                        image = adjust_brightness_contrast(image, min_value, max_value)
+def maximum_intensity_projection(stack):
+    """Compute the Maximum Intensity Projection (MIP) over the z-axis of a 3D stack."""
+    return np.max(stack, axis=0)
 
-                        # Save the image as JPEG
-                        filename = f"{os.path.basename(input_file).replace('.nd2', '')}"
-                        if v_exists:
-                            filename += f"_view_{v}"
-                        filename += f"_channel_{c}_frame_{f}"
-                        if z_exists:
-                            filename += f"_z_{z}"
-                        save_image(image, output_path, filename)
-
-
-
-def process_nd2_folder(input_folder, output_path, channel_range, frame_range, z_range, view_range, contrast_of_channels):
+def process_nd2_folder(input_folder, output_path, channel_range, frame_range, z_range, view_range, contrast_of_channels, use_mip):
     """
     Processes all ND2 files in a given folder.
     
@@ -135,7 +165,7 @@ def process_nd2_folder(input_folder, output_path, channel_range, frame_range, z_
     for file in os.listdir(input_folder):
         if file.endswith('.nd2'):
             input_file = os.path.join(input_folder, file)
-            process_nd2_file(input_file, output_path, channel_range, frame_range, z_range, view_range, contrast_of_channels)
+            process_nd2_file(input_file, output_path, channel_range, frame_range, z_range, view_range, contrast_of_channels, use_mip)
 
 # Main part of the program
 if __name__ == "__main__":
