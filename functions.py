@@ -36,9 +36,10 @@ def save_image(image, output_path, filename):
     img.save(output_file)
     print(f"Saved {output_file}")
 
-def process_nd2_file(input_file, output_path, channel_range, frame_range, z_range, contrast_of_channels):
+def process_nd2_file(input_file, output_path, channel_range, frame_range, z_range, view_range, contrast_of_channels):
     """
-    Processes an ND2 file by iterating through channels, frames, z-planes, adjusting brightness/contrast, and saving as JPEG.
+    Processes an ND2 file by iterating through views, channels, frames, z-planes, 
+    adjusting brightness/contrast, and saving as JPEG.
     
     Parameters:
     - input_file: Path to the ND2 file.
@@ -46,6 +47,7 @@ def process_nd2_file(input_file, output_path, channel_range, frame_range, z_rang
     - channel_range: Tuple indicating the range of channels to process (start_channel, end_channel).
     - frame_range: Tuple indicating the range of frames to process (start_frame, end_frame).
     - z_range: Tuple indicating the range of z-planes to process (start_z, end_z).
+    - view_range: Tuple indicating the range of views (also called "Series") to process (start_view, end_view).
     - contrast_of_channels: Dictionary with min/max brightness values for each channel.
     
     Returns:
@@ -55,38 +57,53 @@ def process_nd2_file(input_file, output_path, channel_range, frame_range, z_rang
         print(f"Processing file: {input_file}")
         axes = nd2.axes
         z_exists = 'z' in axes
-        print("Available axes:", nd2.axes)  # Display available axes in the ND2 file
-        if z_exists:
-            nd2.bundle_axes = 'tzcyx'  # Set axes: time (t), z-plane (z), channel (c), y (height), x (width)
+        v_exists = 'v' in axes
+        print("Available axes:", axes)
+        
+        if v_exists:
+            nd2.bundle_axes = 'vtzcyx' if z_exists else 'vtyxc'
         else:
-            nd2.bundle_axes = 'tyxc'  # Set axes: time (t), y (height), x (width), channel (c)
+            nd2.bundle_axes = 'tzcyx' if z_exists else 'tyxc'
+
+        # Iterate through view (v), channel (c), frame (t), and z-plane (z) as needed
+        for v in range(view_range[0], view_range[1] + 1):
+            if v_exists:
+                nd2.default_coords['v'] = v - 1  # Set view if available
+
+            for c in range(channel_range[0], channel_range[1] + 1):
+                for f in range(frame_range[0], frame_range[1] + 1):
+                    for z in range(z_range[0], z_range[1] + 1):
+                        nd2.default_coords['t'] = f - 1  # Frame (time point)
+                        nd2.default_coords['c'] = c - 1  # Channel
+                        if z_exists:
+                            nd2.default_coords['z'] = z - 1  # Z-plane
+
+                        # Retrieve the 2D frame as a NumPy array
+                        if z_exists and v_exists:
+                            image = np.array(nd2.get_frame_2D(v=v-1, c=c-1, t=f-1, z=z-1))
+                        elif v_exists:
+                            image = np.array(nd2.get_frame_2D(v=v-1, c=c-1, t=f-1))
+                        elif z_exists:
+                            image = np.array(nd2.get_frame_2D(c=c-1, t=f-1, z=z-1))
+                        else:
+                            image = np.array(nd2.get_frame_2D(c=c-1, t=f-1))
+
+                        # Adjust brightness and contrast based on the channel's min/max values
+                        min_value, max_value = contrast_of_channels.get(c, (0, 255))
+                        image = adjust_brightness_contrast(image, min_value, max_value)
+
+                        # Save the image as JPEG
+                        filename = f"{os.path.basename(input_file).replace('.nd2', '')}"
+                        if v_exists:
+                            filename += f"_view_{v}"
+                        filename += f"_channel_{c}_frame_{f}"
+                        if z_exists:
+                            filename += f"_z_{z}"
+                        save_image(image, output_path, filename)
 
 
-        for c in range(channel_range[0], channel_range[1] + 1):
-            for f in range(frame_range[0], frame_range[1] + 1):
-                for z in range(z_range[0], z_range[1] + 1):
-                    nd2.default_coords['t'] = f - 1  # Select frame (time point)
-                    nd2.default_coords['c'] = c - 1  # Select channel
-                    if z_exists:
-                        nd2.default_coords['z'] = z - 1  # Select z-plane
 
-                    # Get the 2D frame as a NumPy array
-                    if z_exists:
-                        image = np.array(nd2.get_frame_2D(c=c-1, t=f-1, z=z-1))
-                    else:
-                        image = np.array(nd2.get_frame_2D(c=c-1, t=f-1))
-
-                    # Adjust brightness and contrast based on the channel's min/max values
-                    min_value, max_value = contrast_of_channels.get(c, (0, 255))  # Fallback to (0, 255) if no values specified
-                    image = adjust_brightness_contrast(image, min_value, max_value)
-
-                    # Save the image as JPEG
-                    filename = f"{os.path.basename(input_file).replace('.nd2', '')}_channel_{c}_frame_{f}"
-                    if z_exists:
-                        filename += f"_z_{z}"
-                    save_image(image, output_path, filename)
-
-def process_nd2_folder(input_folder, output_path, channel_range, frame_range, z_range, contrast_of_channels):
+def process_nd2_folder(input_folder, output_path, channel_range, frame_range, z_range, view_range, contrast_of_channels):
     """
     Processes all ND2 files in a given folder.
     
@@ -96,6 +113,7 @@ def process_nd2_folder(input_folder, output_path, channel_range, frame_range, z_
     - channel_range: Tuple indicating the range of channels to process (start_channel, end_channel).
     - frame_range: Tuple indicating the range of frames to process (start_frame, end_frame).
     - z_range: Tuple indicating the range of z-planes to process (start_z, end_z).
+    - view_range: Tuple indicating the range of views (also called "Series") to process (start_view, end_view).
     - contrast_of_channels: Dictionary with min/max brightness values for each channel.
     
     Returns:
@@ -108,7 +126,7 @@ def process_nd2_folder(input_folder, output_path, channel_range, frame_range, z_
     for file in os.listdir(input_folder):
         if file.endswith('.nd2'):
             input_file = os.path.join(input_folder, file)
-            process_nd2_file(input_file, output_path, channel_range, frame_range, z_range, contrast_of_channels)
+            process_nd2_file(input_file, output_path, channel_range, frame_range, z_range, view_range, contrast_of_channels)
 
 # Main part of the program
 if __name__ == "__main__":
