@@ -46,7 +46,9 @@ def process_nd2_file(input_file, output_path, channel_range, frame_range, z_rang
     - output_path: Path where the output JPGs will be saved.
     - channel_range: Tuple indicating the range of channels to process (start_channel, end_channel).
     - frame_range: Tuple indicating the range of frames to process (start_frame, end_frame).
-    - z_range: Tuple indicating the range of z-planes to process (start_z, end_z).
+    - z_range: Tuple indicating the range of z-planes to process (start_z, end_z) OR
+               dictionary indicating the range of z-planes to process for each channel
+               e.g.: z_range = {1:(3,4), 2:(1,5)}
     - view_range: Tuple indicating the range of views (also called "Series") to process (start_view, end_view).
     - contrast_of_channels: Dictionary with min/max brightness values for each channel.
     
@@ -72,7 +74,14 @@ def process_nd2_file(input_file, output_path, channel_range, frame_range, z_rang
 
             for c in range(channel_range[0], channel_range[1] + 1):
                 for f in range(frame_range[0], frame_range[1] + 1):
-                    for z in range(z_range[0], z_range[1] + 1):
+
+                    # Different z range for each channel
+                    if isinstance(z_range, tuple):
+                        z_range_local = range(z_range[0], z_range[1] + 1)
+                    if isinstance(z_range, dict):
+                        z_range_local = range(z_range.get(c)[0], z_range.get(c)[1] + 1)
+
+                    for z in z_range_local:
                         nd2.default_coords['t'] = f - 1  # Frame (time point)
                         nd2.default_coords['c'] = c - 1  # Channel
                         if z_exists:
@@ -89,7 +98,7 @@ def process_nd2_file(input_file, output_path, channel_range, frame_range, z_rang
                             image = np.array(nd2.get_frame_2D(c=c-1, t=f-1))
 
                         # Adjust brightness and contrast based on the channel's min/max values
-                        min_value, max_value = contrast_of_channels.get(c, (0, 255))
+                        min_value, max_value = contrast_of_channels.get(c) #contrast_of_channels.get(c, (0, 255))
                         image = adjust_brightness_contrast(image, min_value, max_value)
 
                         # Save the image as JPEG
