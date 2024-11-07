@@ -3,7 +3,7 @@ from nd2reader import ND2Reader
 from PIL import Image
 import os
 
-def adjust_brightness_contrast(image, min_value, max_value):
+def adjust_brightness_contrast(image, min_value, max_value, offset):
     """
     Adjusts the brightness and contrast of an image based on the given min and max values.
     
@@ -11,10 +11,12 @@ def adjust_brightness_contrast(image, min_value, max_value):
     - image: NumPy array representing the image.
     - min_value: Minimum value for brightness adjustment.
     - max_value: Maximum value for brightness adjustment.
+    - offset: The offset value to add to each pixel.
     
     Returns:
     - image: The adjusted image as a NumPy array.
     """
+    image = image + offset  # Offset adjustment
     image = np.clip(image, min_value, max_value)  # Clip values to the range [min_value, max_value]
     image = ((image - min_value) / (max_value - min_value) * 255).astype(np.uint8)  # Scale to 0-255
     return image
@@ -36,13 +38,13 @@ def save_image(image, output_path, filename):
     img.save(output_file)
     print(f"Saved {output_file}")
 
-def process_z_planes(nd2, z_range_local, v, c, f, contrast, use_mip, output_path, filename_base):
+def process_z_planes(nd2, z_range_local, v, c, f, contrast, use_mip, output_path, filename_base, offset):
     """Handle processing of z-planes, either with MIP or exporting each plane separately."""
     if use_mip:
         # Generate MIP across the z range
         image_stack = [np.array(nd2.get_frame_2D(v=v-1, c=c-1, t=f-1, z=z-1)) for z in z_range_local]
         mip_image = maximum_intensity_projection(np.stack(image_stack))
-        mip_image = adjust_brightness_contrast(mip_image, *contrast)
+        mip_image = adjust_brightness_contrast(mip_image, *contrast, offset)
         
         filename = f"{filename_base}_MIP_z_{z_range_local[0]}-{z_range_local[-1]}"
         save_image(mip_image, output_path, filename)
@@ -52,13 +54,23 @@ def process_z_planes(nd2, z_range_local, v, c, f, contrast, use_mip, output_path
         for z in z_range_local:
             nd2.default_coords['z'] = z - 1
             image = np.array(nd2.get_frame_2D(v=v-1, c=c-1, t=f-1, z=z-1))
-            image = adjust_brightness_contrast(image, *contrast)
+            image = adjust_brightness_contrast(image, *contrast, offset)
             
             filename = f"{filename_base}_z_{z}"
             save_image(image, output_path, filename)
             print(f"Saved {filename}")
 
-def process_nd2_file(input_file, output_path, channel_range, frame_range, z_range, view_range, contrast_of_channels, use_mip):
+def process_nd2_file(
+    input_file,
+    output_path,
+    channel_range,
+    frame_range,
+    z_range,
+    view_range,
+    contrast_of_channels,
+    use_mip,
+    offset
+    ):
     """
     Processes an ND2 file by iterating through views, channels, frames, and z-planes, 
     adjusting brightness/contrast, optionally applying Maximum Intensity Projection (MIP), 
@@ -73,6 +85,7 @@ def process_nd2_file(input_file, output_path, channel_range, frame_range, z_rang
     - view_range: Tuple indicating the range of views to process (start_view, end_view).
     - contrast_of_channels: Dictionary with min/max brightness values for each channel.
     - use_mip: Boolean indicating whether to apply Maximum Intensity Projection (MIP) over the z-range.
+    - offset: An integer to adjust the brightness by adding this value to each pixel.
     
     Returns:
     - None
@@ -109,11 +122,11 @@ def process_nd2_file(input_file, output_path, channel_range, frame_range, z_rang
 
                     # Process z-planes with MIP or single slices
                     if z_exists:
-                        process_z_planes(nd2, z_range_local, v, c, f, contrast, use_mip, output_path, filename_base)
+                        process_z_planes(nd2, z_range_local, v, c, f, contrast, use_mip, output_path, filename_base, offset)
                     else:
                         # Process 2D frames without z-dimension
                         image = np.array(nd2.get_frame_2D(v=v-1, c=c-1, t=f-1)) if v_exists else np.array(nd2.get_frame_2D(c=c-1, t=f-1))
-                        image = adjust_brightness_contrast(image, *contrast)
+                        image = adjust_brightness_contrast(image, *contrast, offset)
                         save_image(image, output_path, filename_base)
                         print(f"Saved {filename_base}")
 
@@ -142,7 +155,16 @@ def maximum_intensity_projection(stack):
     """Compute the Maximum Intensity Projection (MIP) over the z-axis of a 3D stack."""
     return np.max(stack, axis=0)
 
-def process_nd2_folder(input_folder, output_path, channel_range, frame_range, z_range, view_range, contrast_of_channels, use_mip):
+def process_nd2_folder(
+    input_folder,
+    output_path,
+    channel_range,
+    frame_range,
+    z_range,
+    view_range,
+    contrast_of_channels,
+    use_mip,
+    offset):
     """
     Processes all ND2 files in a given folder.
     
@@ -154,6 +176,7 @@ def process_nd2_folder(input_folder, output_path, channel_range, frame_range, z_
     - z_range: Tuple indicating the range of z-planes to process (start_z, end_z).
     - view_range: Tuple indicating the range of views (also called "Series") to process (start_view, end_view).
     - contrast_of_channels: Dictionary with min/max brightness values for each channel.
+    - offset: An integer to adjust the brightness by adding this value to each pixel.
     
     Returns:
     - None
@@ -165,7 +188,7 @@ def process_nd2_folder(input_folder, output_path, channel_range, frame_range, z_
     for file in os.listdir(input_folder):
         if file.endswith('.nd2'):
             input_file = os.path.join(input_folder, file)
-            process_nd2_file(input_file, output_path, channel_range, frame_range, z_range, view_range, contrast_of_channels, use_mip)
+            process_nd2_file(input_file, output_path, channel_range, frame_range, z_range, view_range, contrast_of_channels, use_mip, offset)
 
 # Main part of the program
 if __name__ == "__main__":
