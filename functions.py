@@ -2,6 +2,140 @@ import numpy as np
 from nd2reader import ND2Reader
 from PIL import Image
 import os
+import pprint
+
+def get_axes_info(nd2, do_print=True):
+    """
+    Returns the available axes in an ND2 file and the selectable range for each axis,
+    starting from 1.
+
+    Parameters:
+    - nd2: Path to the ND2 file or nd2 object.
+    - do_print: Boolean
+
+    Returns:
+    - A Tuple containing an array of available axes and a dictionary with axis names as keys and value ranges as tuples (start at 1),
+    - or None, if do_print = True
+    """
+    
+    def body(nd2):
+        axes_info = {}
+
+        # Get all axes available in the file
+        available_axes = nd2.axes
+
+        # Retrieve possible ranges for each available axis
+        if 'c' in available_axes:
+            axes_info['c'] = (1, nd2.sizes['c'])
+        if 't' in available_axes:
+            axes_info['t'] = (1, nd2.sizes['t'])
+        if 'z' in available_axes:
+            axes_info['z'] = (1, nd2.sizes['z'])
+        if 'v' in available_axes:
+            axes_info['v'] = (1, nd2.sizes['v'])
+        axes_info['x'] = (1, nd2.sizes['x'])
+        axes_info['y'] = (1, nd2.sizes['y'])
+
+        # Display the range for each axis for user clarity
+        if do_print:
+            print("Available axes in nd2-file:")
+            print(available_axes)
+            for axis, (min_val, max_val) in axes_info.items():
+                print(f"Axis '{axis}': Range {min_val} to {max_val}")
+            return
+
+        return available_axes, axes_info
+    
+    if isinstance(nd2, str):
+        with ND2Reader(nd2) as nd2_object:
+            return body(nd2_object)
+    else:
+        return body(nd2)
+
+def validate_user_inputs(nd2, channel_range, frame_range, z_range, view_range, contrast_of_channels):
+    """
+    Validates user inputs to ensure they are within the valid range and that specified axes exist.
+    
+    Parameters:
+    - nd2: Opened ND2 file object.
+    - channel_range: Tuple indicating the range of channels to process (start_channel, end_channel).
+    - frame_range: Tuple indicating the range of frames to process (start_frame, end_frame).
+    - z_range: Tuple or dictionary indicating the range of z-planes to process.
+    - view_range: Tuple indicating the range of views to process (start_view, end_view).
+    - contrast_of_channels: Dictionary with min/max brightness values for each channel.
+    
+    Returns:
+    - bool: True if all inputs are valid, False otherwise.
+    """
+    valid = True
+    available_axes, axis_ranges = get_axes_info(nd2, False)
+    var_dict = {
+        'c': channel_range,
+        't': frame_range,
+        'z': z_range,
+        'v': view_range,
+        #'contrast': contrast_of_channels,
+    }
+
+    # Helper function to check ranges
+    def check_range(axis_name, chosen_range):
+        nonlocal axis_ranges
+        nonlocal valid
+        axis_range = axis_ranges[axis_name]
+
+        # Check tuples
+        if isinstance(chosen_range, tuple):
+            check_range_single(axis_name, axis_range, chosen_range)
+        
+        # Check dictionaries
+        elif isinstance(chosen_range, dict):
+            if axis_name != 'z':
+                print(f"Axis {axis_name} should be a tuple, not a dictionary!")
+                valid = False
+            else:
+                check_dict(axis_name, axis_range, chosen_range)
+        else:
+            print(f"{axis_name} should be a tuple of (min, max), or a dictionary of tuples.")
+    
+    def check_dict(axis_name, axis_range, range_dict, check_tuples=True):
+        nonlocal valid
+        for channel, s_chosen_range, in range_dict.items():
+            if not (channel_range[0] <= channel <= channel_range[1]):
+                print(f"Channel {channel} chosen in the dict for axis {axis_name} is out of bounds.")
+                print(f"Valid c values are from {axis_range[0]} to {axis_range[1]}.")
+                valid = False
+            if check_tuples:
+                check_range_single(axis_name, axis_range, s_chosen_range)
+        
+    def check_range_single(axis_name, axis_range, chosen_range):
+        nonlocal valid
+        if chosen_range[0] < axis_range[0] or chosen_range[1] > axis_range[1]:
+            print(f"Error: {axis_name} range ({chosen_range[0]}, {chosen_range[1]}) is out of bounds. "
+                  f"Valid {axis_name} values are from {axis_range[0]} to {axis_range[1]}.")
+            valid = False
+        if chosen_range[0] > chosen_range[1]:
+            print(f"Error: For axis {axis_name}, the minimum value should be less than the maximum.")
+            valid = False
+
+    # Check if given ranges are correct
+    for axis in available_axes:
+        if axis in ['x', 'y']:
+            continue
+        check_range(axis, var_dict[axis])
+    
+    # Check channels given in the contrast dict:
+    check_dict("contrast", axis_ranges['c'], contrast_of_channels, False)
+
+    # Check if there are unnecessary user inputs
+    for axis, chosen_range in var_dict.items():
+        if axis not in available_axes and chosen_range:
+            print(f"Warning: Channel axis ({axis}) not found in this ND2 file. Ignoring {axis}-range.")
+
+    if not valid:
+        print("===================================")
+        print("Please mind the available ranges:")
+        pprint.pprint(axis_ranges)
+    return valid
 
 def adjust_brightness_contrast(image, min_value, max_value, offset):
     """
@@ -97,8 +231,13 @@ def process_nd2_file(
         v_exists = 'v' in axes
         print("Available axes:", axes)
 
+        # Only run the script, if the user inputs are valid...
+        if not validate_user_inputs(nd2, channel_range, frame_range, z_range, view_range, contrast_of_channels):
+            return
+
         # Set bundle_axes based on available dimensions
-        nd2.bundle_axes = 'vtzcyx' if v_exists and z_exists else 'vtyxc' if v_exists else 'tzcyx' if z_exists else 'tyxc'
+        axes_to_bundle = ''.join(axis for axis in ['v', 't', 'z', 'c', 'y', 'x'] if axis in nd2.axes)
+        nd2.bundle_axes = axes_to_bundle
 
         # Iterate over views, channels, and frames as needed
         for v in range(view_range[0], view_range[1] + 1):
@@ -129,27 +268,6 @@ def process_nd2_file(
                         image = adjust_brightness_contrast(image, *contrast, offset)
                         save_image(image, output_path, filename_base)
                         print(f"Saved {filename_base}")
-
-# def maximum_intensity_projection(image):
-#     """
-#     Perform Maximum Intensity Projection (MIP) over a specified range of z-planes.
-    
-#     Parameters:
-#     - image: 3D NumPy array representing the image stack, with dimensions (z, y, x).
-#     - z_range: Tuple specifying the range of z-planes to include in the MIP (start_z, end_z).
-    
-#     Returns:
-#     - 2D NumPy array representing the MIP over the specified z-range.
-#     """
-#     start_z, end_z = z_range
-    
-#     # Slicing the image stack to the specified z-range
-#     limited_stack = image[start_z:end_z + 1, :, :]
-    
-#     # Perform Maximum Intensity Projection on the limited z-range
-#     mip_image = np.max(limited_stack, axis=0)
-    
-#     return mip_image
 
 def maximum_intensity_projection(stack):
     """Compute the Maximum Intensity Projection (MIP) over the z-axis of a 3D stack."""
