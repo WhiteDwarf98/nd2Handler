@@ -1,6 +1,7 @@
 import numpy as np
 from nd2reader import ND2Reader
 from PIL import Image
+import tifffile as tiff
 import os
 import pprint
 
@@ -52,7 +53,7 @@ def get_axes_info(nd2, do_print=True):
     else:
         return body(nd2)
 
-def validate_user_inputs(nd2, channel_range, frame_range, z_range, view_range, contrast_of_channels):
+def validate_user_inputs(nd2, channel_range, frame_range, z_range, view_range, contrast_of_channels, file_format):
     """
     Validates user inputs to ensure they are within the valid range and that specified axes exist.
     
@@ -131,6 +132,11 @@ def validate_user_inputs(nd2, channel_range, frame_range, z_range, view_range, c
         if axis not in available_axes and chosen_range:
             print(f"Warning: Channel axis ({axis}) not found in this ND2 file. Ignoring {axis}-range.")
 
+    # Check for file_format
+    if not (file_format in ['jpg', 'tif']):
+        print(f"Error: Invalid file_format '{file_format}'! Must be 'jpg' or 'tif'.")
+        valid = False
+
     if not valid:
         print("===================================")
         print("Please mind the available ranges:")
@@ -155,25 +161,32 @@ def adjust_brightness_contrast(image, min_value, max_value, offset):
     image = ((image - min_value) / (max_value - min_value) * 255).astype(np.uint8)  # Scale to 0-255
     return image
 
-def save_image(image, output_path, filename):
+def save_image(image, output_path, filename, file_format):
     """
-    Saves a NumPy array as a JPEG image.
+    Saves a NumPy array as an image file in the specified format.
     
     Parameters:
-    - image: NumPy array representing the image.
+    - image: NumPy array representing the image or image stack.
     - output_path: Path where the image will be saved.
     - filename: The name of the file (without extension).
+    - file_format: File format to save the image as ('jpg' or 'tif').
     
     Returns:
     - None
     """
-    output_file = os.path.join(output_path, f"{filename}.jpg")
-    img = Image.fromarray(image)
-    img.save(output_file)
+    output_file = os.path.join(output_path, f"{filename}.{file_format}")
+    if file_format == 'jpg':
+        img = Image.fromarray(image)
+        img.save(output_file)
+    elif file_format == 'tif':
+        tiff.imwrite(output_file, image, photometric='minisblack')
     print(f"Saved {output_file}")
 
-def process_z_planes(nd2, z_range_local, v, c, f, contrast, use_mip, output_path, filename_base, offset):
-    """Handle processing of z-planes, either with MIP or exporting each plane separately."""
+def process_z_planes(nd2, z_range_local, v, c, f, contrast, use_mip, stack_z_to_tiff, output_path, filename_base, file_format, offset):
+    """
+    Handles processing of z-planes, either with MIP or exporting each plane separately, 
+    with optional stacking of z-planes in a single TIFF file.
+    """
     if use_mip:
         # Generate MIP across the z range
         image_stack = [np.array(nd2.get_frame_2D(v=v-1, c=c-1, t=f-1, z=z-1)) for z in z_range_local]
@@ -181,8 +194,17 @@ def process_z_planes(nd2, z_range_local, v, c, f, contrast, use_mip, output_path
         mip_image = adjust_brightness_contrast(mip_image, *contrast, offset)
         
         filename = f"{filename_base}_MIP_z_{z_range_local[0]}-{z_range_local[-1]}"
-        save_image(mip_image, output_path, filename)
-        print(f"Saved {filename}")
+        save_image(mip_image, output_path, filename, file_format)
+    elif stack_z_to_tiff and file_format == 'tif':
+        # Stack z-planes into a single TIFF file
+        image_stack = []
+        for z in z_range_local:
+            image = np.array(nd2.get_frame_2D(v=v-1, c=c-1, t=f-1, z=z-1))
+            image = adjust_brightness_contrast(image, *contrast, offset)
+            image_stack.append(image)
+        image_stack = np.stack(image_stack)
+        filename = f"{filename_base}_z_{z_range_local[0]}-{z_range_local[-1]}"
+        save_image(image_stack, output_path, filename, file_format)
     else:
         # Process each z-plane individually
         for z in z_range_local:
@@ -191,8 +213,7 @@ def process_z_planes(nd2, z_range_local, v, c, f, contrast, use_mip, output_path
             image = adjust_brightness_contrast(image, *contrast, offset)
             
             filename = f"{filename_base}_z_{z}"
-            save_image(image, output_path, filename)
-            print(f"Saved {filename}")
+            save_image(image, output_path, filename, file_format)
 
 def process_nd2_file(
     input_file,
@@ -203,22 +224,26 @@ def process_nd2_file(
     view_range,
     contrast_of_channels,
     use_mip,
+    stack_z_to_tiff,
+    file_format,
     offset
     ):
     """
-    Processes an ND2 file by iterating through views, channels, frames, and z-planes, 
-    adjusting brightness/contrast, optionally applying Maximum Intensity Projection (MIP), 
-    and saving as JPEG images.
+    Processes an ND2 file by iterating through views, channels, frames, and z-planes,
+    adjusting brightness/contrast, optionally applying Maximum Intensity Projection (MIP),
+    and saving images in the specified format.
     
     Parameters:
     - input_file: Path to the ND2 file.
-    - output_path: Path where the output JPGs will be saved.
+    - output_path: Path where the output images will be saved.
     - channel_range: Tuple indicating the range of channels to process (start_channel, end_channel).
     - frame_range: Tuple indicating the range of frames to process (start_frame, end_frame).
     - z_range: Tuple or dict indicating the range of z-planes to process for each channel.
     - view_range: Tuple indicating the range of views to process (start_view, end_view).
     - contrast_of_channels: Dictionary with min/max brightness values for each channel.
     - use_mip: Boolean indicating whether to apply Maximum Intensity Projection (MIP) over the z-range.
+    - stack_z_to_tiff: Boolean indicating whether to stack the z-range in a TIFF file.
+    - file_format: Desired file format ('jpg' or 'tif').
     - offset: An integer to adjust the brightness by adding this value to each pixel.
     
     Returns:
@@ -231,8 +256,8 @@ def process_nd2_file(
         v_exists = 'v' in axes
         print("Available axes:", axes)
 
-        # Only run the script, if the user inputs are valid...
-        if not validate_user_inputs(nd2, channel_range, frame_range, z_range, view_range, contrast_of_channels):
+        # Validate user inputs
+        if not validate_user_inputs(nd2, channel_range, frame_range, z_range, view_range, contrast_of_channels, file_format):
             return
 
         # Set bundle_axes based on available dimensions
@@ -245,29 +270,28 @@ def process_nd2_file(
                 nd2.default_coords['v'] = v - 1  # Set view if available
 
             for c in range(channel_range[0], channel_range[1] + 1):
-                contrast = contrast_of_channels.get(c, (0, 255))  # Retrieve contrast values for channel
+                contrast = contrast_of_channels.get(c, (0, 255))
                 for f in range(frame_range[0], frame_range[1] + 1):
                     nd2.default_coords['t'] = f - 1
                     nd2.default_coords['c'] = c - 1
                     
-                    # Define local z-range for each channel if z_range is a dictionary
+                    # Determine local z-range for each channel
                     z_range_local = range(z_range[0], z_range[1] + 1) if isinstance(z_range, tuple) else range(z_range.get(c)[0], z_range.get(c)[1] + 1)
 
-                    # Base filename for each combination
+                    # Base filename
                     filename_base = f"{os.path.basename(input_file).replace('.nd2', '')}"
                     if v_exists:
                         filename_base += f"_view_{v}"
                     filename_base += f"_channel_{c}_frame_{f}"
 
-                    # Process z-planes with MIP or single slices
+                    # Process z-planes with MIP, TIFF stacking, or as individual planes
                     if z_exists:
-                        process_z_planes(nd2, z_range_local, v, c, f, contrast, use_mip, output_path, filename_base, offset)
+                        process_z_planes(nd2, z_range_local, v, c, f, contrast, use_mip, stack_z_to_tiff, output_path, filename_base, file_format, offset)
                     else:
                         # Process 2D frames without z-dimension
                         image = np.array(nd2.get_frame_2D(v=v-1, c=c-1, t=f-1)) if v_exists else np.array(nd2.get_frame_2D(c=c-1, t=f-1))
                         image = adjust_brightness_contrast(image, *contrast, offset)
-                        save_image(image, output_path, filename_base)
-                        print(f"Saved {filename_base}")
+                        save_image(image, output_path, filename_base, file_format)
 
 def maximum_intensity_projection(stack):
     """Compute the Maximum Intensity Projection (MIP) over the z-axis of a 3D stack."""
@@ -282,18 +306,23 @@ def process_nd2_folder(
     view_range,
     contrast_of_channels,
     use_mip,
+    stack_z_to_tiff,
+    file_format,
     offset):
     """
     Processes all ND2 files in a given folder.
     
     Parameters:
     - input_folder: Path to the folder containing ND2 files.
-    - output_path: Path where the output JPGs will be saved.
+    - output_path: Path where the output images will be saved.
     - channel_range: Tuple indicating the range of channels to process (start_channel, end_channel).
     - frame_range: Tuple indicating the range of frames to process (start_frame, end_frame).
-    - z_range: Tuple indicating the range of z-planes to process (start_z, end_z).
-    - view_range: Tuple indicating the range of views (also called "Series") to process (start_view, end_view).
+    - z_range: Tuple indicating the range of z-planes (start_z, end_z).
+    - view_range: Tuple indicating the range of views to process (start_view, end_view).
     - contrast_of_channels: Dictionary with min/max brightness values for each channel.
+    - use_mip: Boolean indicating whether to apply Maximum Intensity Projection (MIP).
+    - stack_z_to_tiff: Boolean indicating whether to stack z-planes in a TIFF file.
+    - file_format: Desired file format ('jpg' or 'tif').
     - offset: An integer to adjust the brightness by adding this value to each pixel.
     
     Returns:
@@ -304,9 +333,20 @@ def process_nd2_folder(
 
     # Iterate through all ND2 files in the input folder
     for file in os.listdir(input_folder):
-        if file.endswith('.nd2'):
-            input_file = os.path.join(input_folder, file)
-            process_nd2_file(input_file, output_path, channel_range, frame_range, z_range, view_range, contrast_of_channels, use_mip, offset)
+        if file.endswith(".nd2"):
+            process_nd2_file(
+                os.path.join(input_folder, file),
+                output_path,
+                channel_range,
+                frame_range,
+                z_range,
+                view_range,
+                contrast_of_channels,
+                use_mip,
+                stack_z_to_tiff,
+                file_format,
+                offset
+            )
 
 # Main part of the program
 if __name__ == "__main__":
