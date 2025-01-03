@@ -5,6 +5,71 @@ import tifffile as tiff
 import os
 import pprint
 
+def parse_range(range_string):
+    """
+    Parses a string representing ranges and returns a list of integers.
+    
+    Examples:
+    - "1,2,3" -> [1, 2, 3]
+    - "2-5,7,8" -> [2, 3, 4, 5, 7, 8]
+    
+    Parameters:
+    - range_string (str): The input string representing the ranges. 
+                          Only integers and the characters ',', '-' are allowed.
+    
+    Returns:
+    - list[int]: A list of integers specified in the range string.
+    - False: False in case of an error
+    """    
+    ranges = []
+    for part in range_string.split(','):
+        if '-' in part:  # Handle ranges like "2-5"
+            start, end = map(int, part.split('-'))
+            if start > end:
+                print(f"Invalid range: '{part}'. Start must be less than or equal to end.")
+                return False
+            ranges.extend(range(start, end + 1))
+        else:  # Handle single values like "7"
+            try:
+                ranges.append(int(part))
+            except ValueError:
+                print(f"Invalid number during parsing a string: '{part}'. Expected an integer.")
+                return False
+    
+    return ranges
+
+def get_contrast_for_channel(contrast_dict, channel):
+    """
+    Finds the contrast settings for a given channel based on a dictionary of ranges.
+    
+    Parameters:
+    - contrast_dict (dict): Dictionary where keys are tuples of channel ranges (as integers) and values are contrast settings.
+    - channel (int): The channel number to find the contrast for.
+    
+    Returns:
+    - tuple: The contrast settings (min, max) for the given channel.
+    """
+    for key_range, contrast in contrast_dict.items():
+        if channel in key_range:
+            return contrast
+    return (0, 255)  # Default contrast if channel is not found
+
+def get_z_range_for_channel(z_range_dict, channel):
+    """
+    Finds the z-range for a given channel based on a dictionary of ranges.
+    
+    Parameters:
+    - z_range_dict (dict): Dictionary where keys are tuples of channel ranges (as integers) and values are z-plane ranges (as lists).
+    - channel (int): The channel number to find the z-range for.
+    
+    Returns:
+    - list[int]: The z-plane range for the given channel.
+    """
+    for key_range, z_range in z_range_dict.items():
+        if channel in key_range:
+            return z_range
+    return []  # Default empty range if channel is not found
+
 def get_axes_info(nd2, do_print=True):
     """
     Returns the available axes in an ND2 file and the selectable range for each axis,
@@ -182,47 +247,64 @@ def save_image(image, output_path, filename, file_format):
         tiff.imwrite(output_file, image, photometric='minisblack')
     print(f"Saved {output_file}")
 
-def process_z_planes(nd2, z_range_local, v, c, f, contrast, use_mip, stack_z_to_tiff, output_path, filename_base, file_format, offset):
+def process_z_planes(nd2, z_list, v, c, f, contrast, use_mip, stack_z_to_tiff, output_path, input_file, file_format, offset):
     """
     Handles processing of z-planes, either with MIP or exporting each plane separately, 
     with optional stacking of z-planes in a single TIFF file.
+    
+    Parameters:
+    - nd2: ND2Reader object.
+    - z_list: List of z-planes to process.
+    - v: Current view index.
+    - c: Current channel index.
+    - f: Current frame index.
+    - contrast: Tuple (min, max) for brightness adjustment.
+    - use_mip: Boolean, whether to use Maximum Intensity Projection (MIP).
+    - stack_z_to_tiff: Boolean, whether to stack z-planes in a TIFF file.
+    - output_path: Path to save the output images.
+    - input_file: The name of the input file.
+    - file_format: Output file format ('jpg' or 'tif').
+    - offset: Integer offset for brightness adjustment.
+    
+    Returns:
+    - None
     """
     if use_mip:
         # Generate MIP across the z range
-        image_stack = [np.array(nd2.get_frame_2D(v=v-1, c=c-1, t=f-1, z=z-1)) for z in z_range_local]
+        image_stack = [np.array(nd2.get_frame_2D(v=v-1, c=c-1, t=f-1, z=z-1)) for z in z_list]
         mip_image = maximum_intensity_projection(np.stack(image_stack))
         mip_image = adjust_brightness_contrast(mip_image, *contrast, offset)
         
-        filename = f"{filename_base}_MIP_z_{z_range_local[0]}-{z_range_local[-1]}"
+        filename = f"{input_file}_v{v}_c{c}_f{f}_MIP_z_{'-'.join(map(str, z_list))}"
         save_image(mip_image, output_path, filename, file_format)
     elif stack_z_to_tiff and file_format == 'tif':
         # Stack z-planes into a single TIFF file
         image_stack = []
-        for z in z_range_local:
+        for z in z_list:
             image = np.array(nd2.get_frame_2D(v=v-1, c=c-1, t=f-1, z=z-1))
             image = adjust_brightness_contrast(image, *contrast, offset)
             image_stack.append(image)
         image_stack = np.stack(image_stack)
-        filename = f"{filename_base}_z_{z_range_local[0]}-{z_range_local[-1]}"
+        filename = f"{input_file}_v{v}_c{c}_f{f}_z_{'-'.join(map(str, z_list))}"
         save_image(image_stack, output_path, filename, file_format)
     else:
         # Process each z-plane individually
-        for z in z_range_local:
+        for z in z_list:
             nd2.default_coords['z'] = z - 1
             image = np.array(nd2.get_frame_2D(v=v-1, c=c-1, t=f-1, z=z-1))
             image = adjust_brightness_contrast(image, *contrast, offset)
             
-            filename = f"{filename_base}_z_{z}"
+            filename = f"{input_file}_v{v}_c{c}_f{f}_z_{z}"
             save_image(image, output_path, filename, file_format)
 
 def process_nd2_file(
     input_file,
     output_path,
-    channel_range,
-    frame_range,
-    z_range,
-    view_range,
+    channel_list,
+    frame_list,
+    view_list,
     contrast_of_channels,
+    z_range,
     use_mip,
     stack_z_to_tiff,
     file_format,
@@ -236,11 +318,11 @@ def process_nd2_file(
     Parameters:
     - input_file: Path to the ND2 file.
     - output_path: Path where the output images will be saved.
-    - channel_range: Tuple indicating the range of channels to process (start_channel, end_channel).
-    - frame_range: Tuple indicating the range of frames to process (start_frame, end_frame).
-    - z_range: Tuple or dict indicating the range of z-planes to process for each channel.
-    - view_range: Tuple indicating the range of views to process (start_view, end_view).
+    - channel_list: List of channels to process.
+    - frame_list: List of frames to process.
+    - view_list: List of views to process.
     - contrast_of_channels: Dictionary with min/max brightness values for each channel.
+    - z_range: Dictionary where keys are channel ranges and values are z-plane ranges.
     - use_mip: Boolean indicating whether to apply Maximum Intensity Projection (MIP) over the z-range.
     - stack_z_to_tiff: Boolean indicating whether to stack the z-range in a TIFF file.
     - file_format: Desired file format ('jpg' or 'tif').
@@ -256,42 +338,30 @@ def process_nd2_file(
         v_exists = 'v' in axes
         print("Available axes:", axes)
 
-        # Validate user inputs
-        if not validate_user_inputs(nd2, channel_range, frame_range, z_range, view_range, contrast_of_channels, file_format):
-            return
-
         # Set bundle_axes based on available dimensions
         axes_to_bundle = ''.join(axis for axis in ['v', 't', 'z', 'c', 'y', 'x'] if axis in nd2.axes)
         nd2.bundle_axes = axes_to_bundle
 
         # Iterate over views, channels, and frames as needed
-        for v in range(view_range[0], view_range[1] + 1):
+        for v in view_list:
             if v_exists:
                 nd2.default_coords['v'] = v - 1  # Set view if available
 
-            for c in range(channel_range[0], channel_range[1] + 1):
-                contrast = contrast_of_channels.get(c, (0, 255))
-                for f in range(frame_range[0], frame_range[1] + 1):
+            for c in channel_list:
+                contrast = get_contrast_for_channel(contrast_of_channels, c)
+                z_list = get_z_range_for_channel(z_range, c)
+                for f in frame_list:
                     nd2.default_coords['t'] = f - 1
                     nd2.default_coords['c'] = c - 1
-                    
-                    # Determine local z-range for each channel
-                    z_range_local = range(z_range[0], z_range[1] + 1) if isinstance(z_range, tuple) else range(z_range.get(c)[0], z_range.get(c)[1] + 1)
-
-                    # Base filename
-                    filename_base = f"{os.path.basename(input_file).replace('.nd2', '')}"
-                    if v_exists:
-                        filename_base += f"_view_{v}"
-                    filename_base += f"_channel_{c}_frame_{f}"
 
                     # Process z-planes with MIP, TIFF stacking, or as individual planes
                     if z_exists:
-                        process_z_planes(nd2, z_range_local, v, c, f, contrast, use_mip, stack_z_to_tiff, output_path, filename_base, file_format, offset)
+                        process_z_planes(nd2, z_list, v, c, f, contrast, use_mip, stack_z_to_tiff, output_path, input_file, file_format, offset)
                     else:
                         # Process 2D frames without z-dimension
                         image = np.array(nd2.get_frame_2D(v=v-1, c=c-1, t=f-1)) if v_exists else np.array(nd2.get_frame_2D(c=c-1, t=f-1))
                         image = adjust_brightness_contrast(image, *contrast, offset)
-                        save_image(image, output_path, filename_base, file_format)
+                        save_image(image, output_path, f"{input_file}_v{v}_c{c}_f{f}", file_format)
 
 def maximum_intensity_projection(stack):
     """Compute the Maximum Intensity Projection (MIP) over the z-axis of a 3D stack."""
@@ -315,11 +385,11 @@ def process_nd2_folder(
     Parameters:
     - input_folder: Path to the folder containing ND2 files.
     - output_path: Path where the output images will be saved.
-    - channel_range: Tuple indicating the range of channels to process (start_channel, end_channel).
-    - frame_range: Tuple indicating the range of frames to process (start_frame, end_frame).
-    - z_range: Tuple indicating the range of z-planes (start_z, end_z).
-    - view_range: Tuple indicating the range of views to process (start_view, end_view).
-    - contrast_of_channels: Dictionary with min/max brightness values for each channel.
+    - channel_range: String representing the range of channels to process (e.g., "1-2").
+    - frame_range: String representing the range of frames to process (e.g., "1").
+    - z_range: Dictionary where keys are channel ranges (as strings) and values are z-plane ranges (as strings).
+    - view_range: String representing the range of views to process (e.g., "1,3,5").
+    - contrast_of_channels: Dictionary with min/max brightness values for each channel (keys as strings).
     - use_mip: Boolean indicating whether to apply Maximum Intensity Projection (MIP).
     - stack_z_to_tiff: Boolean indicating whether to stack z-planes in a TIFF file.
     - file_format: Desired file format ('jpg' or 'tif').
@@ -328,6 +398,23 @@ def process_nd2_folder(
     Returns:
     - None
     """
+    # Parse ranges
+    channel_list = parse_range(channel_range)
+    frame_list = parse_range(frame_range)
+    view_list = parse_range(view_range)
+
+    if not all([channel_list, frame_list, view_list]):
+        print("Error: Invalid range strings provided.")
+        return
+
+    # Parse contrast_of_channels and z_range keys and values
+    contrast_of_channels = {
+        tuple(parse_range(k)): v for k, v in contrast_of_channels.items()
+    }
+    z_range = {
+        tuple(parse_range(k)): parse_range(v) for k, v in z_range.items()
+    }
+
     # Make sure the output folder exists
     os.makedirs(output_path, exist_ok=True)
 
@@ -337,11 +424,11 @@ def process_nd2_folder(
             process_nd2_file(
                 os.path.join(input_folder, file),
                 output_path,
-                channel_range,
-                frame_range,
-                z_range,
-                view_range,
+                channel_list,
+                frame_list,
+                view_list,
                 contrast_of_channels,
+                z_range,
                 use_mip,
                 stack_z_to_tiff,
                 file_format,
