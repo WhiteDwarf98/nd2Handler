@@ -8,16 +8,31 @@ import pprint
 class nd2Handler: 
     def __init__(
             self,
-            channel_range,
-            frame_range,
-            z_range,
-            view_range,
+            channels,
+            frames,
+            z_layers,
+            views,
             contrast_of_channels,
             file_format = 'jpg',
             offset = 0,
             stack_z_to_tiff = False,
             do_intensity_projection = None,
             ):
+        """
+        Initializes the nd2Handler class with user-defined settings for channel selection,
+        frame selection, z-layer handling, output format, intensity projection, and contrast adjustments.
+
+        Parameters:
+        - channels (str): String specifying channels to process (e.g., "1-3,5").
+        - frames (str): String specifying frames to process ("time axis") (e.g., "2-4,6,8").
+        - z_layers (dict): Dict with channel-String as keys and z_layer-string as values (e.g., {"1-2": "2,4"}).
+        - views (str): String specifying views to process (e.g., "1,2").
+        - contrast_of_channels (dict): Dict with channel-String as keys and contrast tuples (min, max) as values (e.g., {"1-2": (500, 800)}).
+        - file_format (str): Output format ("jpg" or "tif"). Default: 'jpg'.
+        - offset (int): Offset value added to the pixel intensities. Default: 0.
+        - stack_z_to_tiff (bool): Whether to stack z-layers into a TIFF file. Default: False.
+        - do_intensity_projection (str or None): Intensity projection method ("max" or "average"). Default: None.
+        """
         
         self.input_folder = None
         self.output_path = None
@@ -30,9 +45,9 @@ class nd2Handler:
         self.file_format = file_format
 
         ## parsing
-        self.channel_list = self.parse_range(channel_range)
-        self.frame_list = self.parse_range(frame_range)
-        self.view_list = self.parse_range(view_range)
+        self.channel_list = self.parse_range(channels)
+        self.frame_list = self.parse_range(frames)
+        self.view_list = self.parse_range(views)
         # e.g. {"1-2": (500, 800)} -> {1: (500, 800), 2: (500, 800)}
         self.contrast_of_channels = {
             ch: v
@@ -42,16 +57,21 @@ class nd2Handler:
         # e.g. {"1-2": "2,4"} -> {1:[2, 4], 2:[2, 4]}
         self.z_list = {
             ch: self.parse_range(v)
-            for k, v in z_range.items()
+            for k, v in z_layers.items()
             for ch in self.parse_range(k)
         }
 
     def validate_user_inputs(self):
         """
-        Validates user inputs to ensure they are within the valid range and that specified axes exist.
-        
+        Validates the user-defined settings against the available axes and values in the current ND2 file.
+
+        Checks include:
+        - Range validation for channels, frames, views, and z-layers.
+        - Existence and bounds of channels in contrast settings.
+        - Validity of file format and intensity projection settings.
+
         Returns:
-        - bool: True if all inputs are valid, False otherwise.
+        - bool: True if all validations pass, False otherwise.
         """
         valid = True
         available_axes, axis_ranges = get_axes_info(self.current_nd2, False)
@@ -97,6 +117,12 @@ class nd2Handler:
             print(f"Error: Invalid file_format '{self.file_format}'! Must be 'jpg' or 'tif'.")
             valid = False
 
+        # Check input for intensity projection
+        projections = ["max", "average"]
+        if self.do_intensity_projection not in projections:
+            print(f"Error: Invalid input for 'do_intensity_projection'. Allowed are {', '.join(projections)}")
+            valid = False
+
         if not valid:
             print("===================================")
             print("Please mind the available ranges:")
@@ -104,6 +130,14 @@ class nd2Handler:
         return valid
 
     def process_folder(self, input_folder, output_path):
+        """
+        Processes all ND2 files in the specified input folder and saves the output
+        images to the specified output path.
+
+        Parameters:
+        - input_folder (str): Directory containing ND2 files.
+        - output_path (str): Directory where processed images will be saved.
+        """
         self.input_folder = input_folder
         self.output_path = output_path
         
@@ -116,7 +150,15 @@ class nd2Handler:
                 self.process_file()
 
     def process_file(self):
+        """
+        Processes the currently set ND2 file by iterating over selected views, channels,
+        frames, and z-layers.
 
+        Depending on settings:
+        - Performs intensity projection if requested.
+        - Saves images as individual 2D planes or stacked TIFFs.
+        - Applies contrast adjustment and optional offset to images.
+        """
         def process_z_planes(v, c, f):
             if 'z' not in self.current_nd2.axes:
                 # Process 2D frames without z-dimension
@@ -171,10 +213,13 @@ class nd2Handler:
                     self.current_nd2.default_coords['c'] = c - 1
                     process_z_planes(v,c,f)
 
-
     def save_image(self, filename):
         """
-        Saves a NumPy array as an image file in the specified format.
+        Saves the current processed image (`self.current_image`) to disk
+        in the specified format ('jpg' or 'tif').
+
+        Parameters:
+        - filename (str): Desired filename (without extension).
         """
         if self.output_path is None:
             print("Please setup 'self.output_path' first.")
@@ -194,6 +239,20 @@ class nd2Handler:
         print(f"Saved {output_file}")
 
     def adjust_brightness_contrast(self, contrast):
+        """
+        Applies contrast adjustment and optional offset to `self.current_image`.
+
+        Steps:
+        - Adds offset.
+        - Clips the image to the given contrast range.
+        - Scales the clipped image to 8-bit (0–255).
+
+        Parameters:
+        - contrast (tuple): (min_value, max_value) defining the intensity range.
+
+        Returns:
+        - np.ndarray: The adjusted image.
+        """
         if self.current_image is None:
             print("No current image loaded. Please execute 'process_file()' first.")
             return
@@ -203,6 +262,18 @@ class nd2Handler:
         return self.current_image
 
     def intensity_projection(self):
+        """
+        Performs an intensity projection (maximum or average) over the z-axis of the current image stack.
+
+        Projection options:
+        - "max"     : Maximum intensity projection.
+        - "average" : Mean intensity projection.
+
+        Returns:
+        - np.ndarray: The projected 2D image.
+        - None: If no projection is applied.
+        - False: If an invalid projection mode was specified.
+        """
         match self.do_intensity_projection:
             case "max":
                 self.current_image = np.max(self.current_image, axis=0)
@@ -210,25 +281,27 @@ class nd2Handler:
                 self.current_image = np.mean(self.current_image, axis=0).astype(self.current_image.dtype)
             case None:
                 return None
+            case _:
+                print("No valid imput for intensity projection. Valid inputs are 'max' and 'average'.")
+                return False
         return self.current_image
-
 
     def parse_range(self, range_string):
         """
-        Parses a string representing ranges and returns a list of integers.
+        Parses a string representing numerical ranges into a list of integers.
 
-        Examples:
-        - "1,2,3" -> [1, 2, 3]
-        - "2-5,7,8" -> [2, 3, 4, 5, 7, 8]
+        Supports:
+        - Comma-separated values (e.g., "1,3,5")
+        - Hyphenated ranges (e.g., "2-4" becomes [2,3,4])
+        - A combination of both (e.g. "1-3,5,6")
 
         Parameters:
-        - range_string (str): The input string representing the ranges. 
-                                Only integers and the characters ',', '-' are allowed.
+        - range_string (str): Range specification string.
 
         Returns:
-        - list[int]: A list of integers specified in the range string.
-        - False: False in case of an error
-        """    
+        - list[int]: Parsed list of integers.
+        - bool: False if parsing fails.
+        """  
         ranges = []
         for part in range_string.split(','):
             if '-' in part:  # Handle ranges like "2-5"
@@ -250,6 +323,7 @@ def get_axes_info(nd2 = None, do_print=True):
     """
     Returns the available axes in an ND2 file and the selectable range for each axis,
     starting from 1.
+    If `do_print` is True, prints the information to the console.
 
     Parameters:
     - nd2: Path to the ND2 file or nd2 object.
