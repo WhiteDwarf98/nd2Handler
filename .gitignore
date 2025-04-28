@@ -5,3 +5,5 @@ old/
 __pychache__/
 .ipynb_checkpoints/
 work.ipynb
+/cellpose/demo_images
+/__pycache__
