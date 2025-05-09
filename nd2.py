@@ -10,11 +10,11 @@ class nd2Handler:
             self,
             channels,
             frames,
-            z_layers,
             views,
+            z_layers_of_channels,
             contrast_of_channels,
+            offset_of_channels = None,
             file_format = 'jpg',
-            offset = 0,
             stack_z_to_tiff = False,
             do_intensity_projection = None,
             ):
@@ -25,7 +25,7 @@ class nd2Handler:
         Parameters:
         - channels (str): String specifying channels to process (e.g., "1-3,5").
         - frames (str): String specifying frames to process ("time axis") (e.g., "2-4,6,8").
-        - z_layers (dict): Dict with channel-String as keys and z_layer-string as values (e.g., {"1-2": "2,4"}).
+        - z_layers_of_channels (dict): Dict with channel-String as keys and z_layer-string as values (e.g., {"1-2": "2,4"}).
         - views (str): String specifying views to process (e.g., "1,2").
         - contrast_of_channels (dict): Dict with channel-String as keys and contrast tuples (min, max) as values (e.g., {"1-2": (500, 800)}).
         - file_format (str): Output format ("jpg" or "tif"). Default: 'jpg'.
@@ -39,25 +39,42 @@ class nd2Handler:
         self.current_file = None # Path to the file
         self.current_nd2 = None # nd2 object
         self.current_image = None # image as numpy array
-        self.offset = offset
         self.do_intensity_projection = do_intensity_projection # None max
         self.stack_z_to_tiff = stack_z_to_tiff
         self.file_format = file_format
 
-        ## parsing
+        #### parsing
         self.channel_list = self.parse_range(channels)
         self.frame_list = self.parse_range(frames)
         self.view_list = self.parse_range(views)
+
+        # Contrast of channels
         # e.g. {"1-2": (500, 800)} -> {1: (500, 800), 2: (500, 800)}
         self.contrast_of_channels = {
             ch: v
             for k, v in contrast_of_channels.items()
             for ch in self.parse_range(k)
         }
+        
+        # Offset of channels
+        if offset_of_channels is not None:
+            # e.g. {"1-2": -100, "3": 50} -> {1: -100, 2: -100, 3: 50)}
+            self.offset_of_channels = {
+                ch: off
+                for k, off in offset_of_channels.items()
+                for ch in self.parse_range(k)
+            }
+        else:
+            self.offset_of_channels = {}
+        for ch in self.channel_list:
+            if ch not in self.offset_of_channels:
+                self.offset_of_channels[ch] = 0
+
+        # z_layers
         # e.g. {"1-2": "2,4"} -> {1:[2, 4], 2:[2, 4]}
-        self.z_list = {
+        self.z_layers_of_channels = {
             ch: self.parse_range(v)
-            for k, v in z_layers.items()
+            for k, v in z_layers_of_channels.items()
             for ch in self.parse_range(k)
         }
 
@@ -78,7 +95,7 @@ class nd2Handler:
         chosen_lists = {
             'c': self.channel_list,
             't': self.frame_list,
-            'z': self.z_list,
+            'z': self.z_layers_of_channels,
             'v': self.view_list,
             #'contrast': contrast_of_channels,
         }
@@ -118,7 +135,7 @@ class nd2Handler:
             valid = False
 
         # Check input for intensity projection
-        projections = ["max", "average"]
+        projections = ["max", "average", None]
         if self.do_intensity_projection not in projections:
             print(f"Error: Invalid input for 'do_intensity_projection'. Allowed are {', '.join(projections)}")
             valid = False
@@ -163,29 +180,29 @@ class nd2Handler:
             if 'z' not in self.current_nd2.axes:
                 # Process 2D frames without z-dimension
                 self.current_image = np.array(self.current_nd2.get_frame_2D(v=v-1, c=c-1, t=f-1)) if 'v' in self.current_nd2.axes else np.array(self.current_nd2.get_frame_2D(c=c-1, t=f-1))
-                self.adjust_brightness_contrast(self.contrast_of_channels[c])
+                self.adjust_brightness_contrast(self.contrast_of_channels[c], self.offset_of_channels[c])
                 self.save_image(f"{self.current_file}_v{v}_c{c}_f{f}")
             elif self.do_intensity_projection is not None:
                 # Generate MIP across the z range
-                self.current_image = np.stack([np.array(self.current_nd2.get_frame_2D(v=v-1, c=c-1, t=f-1, z=z-1)) for z in self.z_list[c]])
+                self.current_image = np.stack([np.array(self.current_nd2.get_frame_2D(v=v-1, c=c-1, t=f-1, z=z-1)) for z in self.z_layers_of_channels[c]])
                 self.intensity_projection()
-                self.adjust_brightness_contrast(self.contrast_of_channels[c])            
-                self.save_image(f"{self.current_file}_v{v}_c{c}_f{f}_IP_z_{'-'.join(map(str, self.z_list[c]))}")
+                self.adjust_brightness_contrast(self.contrast_of_channels[c], self.offset_of_channels[c])
+                self.save_image(f"{self.current_file}_v{v}_c{c}_f{f}_IP_z_{'-'.join(map(str, self.z_layers_of_channels[c]))}")
             elif self.stack_z_to_tiff and self.file_format == 'tif':
                 # Stack z-planes into a single TIFF file
                 image_stack = []
-                for z in self.z_list[c]:
+                for z in self.z_layers_of_channels[c]:
                     self.current_image = np.array(self.current_nd2.get_frame_2D(v=v-1, c=c-1, t=f-1, z=z-1))
-                    self.adjust_brightness_contrast(self.contrast_of_channels[c])
+                    self.adjust_brightness_contrast(self.contrast_of_channels[c], self.offset_of_channels[c])
                     image_stack.append(self.current_image)
                 self.current_image = np.stack(image_stack)
-                self.save_image(f"{self.current_file}_v{v}_c{c}_f{f}_z_{'-'.join(map(str, self.z_list[c]))}")
+                self.save_image(f"{self.current_file}_v{v}_c{c}_f{f}_z_{'-'.join(map(str, self.z_layers_of_channels[c]))}")
             else:
                 # Process each z-plane individually
-                for z in self.z_list[c]:
+                for z in self.z_layers_of_channels[c]:
                     self.current_nd2.default_coords['z'] = z - 1
                     self.current_image = np.array(self.current_nd2.get_frame_2D(v=v-1, c=c-1, t=f-1, z=z-1))
-                    self.adjust_brightness_contrast(self.contrast_of_channels[c])
+                    self.adjust_brightness_contrast(self.contrast_of_channels[c], self.offset_of_channels[c])
                     self.save_image(f"{self.current_file}_v{v}_c{c}_f{f}_z_{z}")
 
 
@@ -238,7 +255,7 @@ class nd2Handler:
             tiff.imwrite(output_file, self.current_image, photometric='minisblack')
         print(f"Saved {output_file}")
 
-    def adjust_brightness_contrast(self, contrast):
+    def adjust_brightness_contrast(self, contrast, offset):
         """
         Applies contrast adjustment and optional offset to `self.current_image`.
 
@@ -256,7 +273,7 @@ class nd2Handler:
         if self.current_image is None:
             print("No current image loaded. Please execute 'process_file()' first.")
             return
-        self.current_image = self.current_image + self.offset  # Offset adjustment
+        self.current_image = self.current_image + offset  # Offset adjustment
         self.current_image = np.clip(self.current_image, *contrast)  # Clip values to the range [min_value, max_value]
         self.current_image = ((self.current_image - contrast[0]) / (contrast[1] - contrast[0]) * 255).astype(np.uint8)  # Scale to 0-255, contrast[0] means min_value, contrast[1] max_value
         return self.current_image
