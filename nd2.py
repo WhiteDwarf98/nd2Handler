@@ -275,7 +275,10 @@ class nd2Handler:
             return
         self.current_image = self.current_image + offset  # Offset adjustment
         self.current_image = np.clip(self.current_image, *contrast)  # Clip values to the range [min_value, max_value]
-        self.current_image = ((self.current_image - contrast[0]) / (contrast[1] - contrast[0]) * 255).astype(np.uint8)  # Scale to 0-255, contrast[0] means min_value, contrast[1] max_value
+        if self.file_format == "tif":
+            self.current_image = ((self.current_image - contrast[0]) / (contrast[1] - contrast[0]) * 65535).astype(np.uint16)
+        else:
+            self.current_image = ((self.current_image - contrast[0]) / (contrast[1] - contrast[0]) * 255).astype(np.uint8)  # Scale to 0-255, contrast[0] means min_value, contrast[1] max_value
         return self.current_image
 
     def intensity_projection(self):
