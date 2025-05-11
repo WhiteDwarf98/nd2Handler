@@ -113,21 +113,34 @@ class nd2Handler:
                         print(f"Valid {axis} values are from {axis_ranges[axis][0]} to {axis_ranges[axis][1]}.")
                         valid = False
             elif isinstance(chosen_lists[axis], dict):
-                for channel, liste in chosen_lists[axis].items():
-                    if channel not in axis_ranges['c']:
-                        print(f"Error: Channel {channel} in axis {axis} is out of bounds.")
-                        print(f"Valid c values are from {axis_ranges['c'][0]} to {axis_ranges['c'][1]}.")
-                    for i in liste:
-                        if i not in axis_list:
-                            print(f"Error: {axis} is out of bounds. ")
-                            print(f"Valid {axis} values are from {axis_ranges[axis][0]} to {axis_ranges[axis][1]}.")
+                if axis != 'z':
+                    print(f"Error: Axis {axis} has to be a list, not a dictionary.")
+                    valid = False
+                else:
+                    for channel, liste in chosen_lists[axis].items():
+                        if channel not in self.channel_list:
+                            print(f"Error: Channel {channel} in axis {axis} is out of bounds.")
+                            print("Please only choose channels you selected in the parameter 'channels'.")
                             valid = False
+                        for i in liste:
+                            if i not in axis_list:
+                                print(f"Error: {axis} is out of bounds. ")
+                                print(f"Valid {axis} values are from {axis_ranges[axis][0]} to {axis_ranges[axis][1]}.")
+                                valid = False
 
         # Check channels given in the contrast dict
         for channel, contrast in self.contrast_of_channels.items():
-            if channel not in axis_ranges['c']:
-                print(f"Error: Channel {channel} in axis {axis} is out of bounds.")
-                print(f"Valid c values are from {axis_ranges['c'][0]} to {axis_ranges['c'][1]}.")
+            if channel not in self.channel_list:
+                print(f"Error: Channel {channel} in 'contrast_of_channels' is out of bounds.")
+                print("Please only choose channels you selected in the parameter 'channels'.")
+                valid = False
+        
+        # Check channels given in the offset dict
+        for channel, offset in self.offset_of_channels.items():
+            if channel not in list(range(axis_ranges['c'][0], axis_ranges['c'][1] + 1)):
+                print(f"Error: Channel {channel} in 'offset_of_channels' is out of bounds.")
+                print(f"Valid channel values are from {axis_ranges['c'][0]} to {axis_ranges['c'][1]}.")
+                valid = False
 
         # Check for file_format
         if not (self.file_format in ['jpg', 'tif']):
