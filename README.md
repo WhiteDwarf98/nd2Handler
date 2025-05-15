@@ -1,6 +1,6 @@
 # ND2Handler
 
-`nd2Handler` is a Python utility for processing ZEISS `.nd2` microscopy files. It allows you to batch-extract images across channels, time frames, views, and z-stacks; apply intensity projections; adjust contrast; and save results as JPG or TIFF files.
+`nd2Handler` is a Python utility for processing `.nd2` microscopy files. It allows you to batch-extract images across channels, time frames, views, and z-stacks; apply intensity projections; adjust contrast; and save results as JPG or TIFF files.
 
 ## Features
 
